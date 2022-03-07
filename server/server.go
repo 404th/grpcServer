@@ -18,11 +18,12 @@ func NewServer() *Server {
 	return &Server{}
 }
 
-func (s *Server) Run(port string) {
+func (s *Server) Run(port string) error {
 	// listening
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("Error while listening on PORT%s", port)
+		return err
 	}
 
 	// creating grpc server
@@ -30,7 +31,10 @@ func (s *Server) Run(port string) {
 
 	if err = gs.Serve(lis); err != nil {
 		log.Fatalf("Error while serving gRPC: %e", err)
+		return err
 	}
+
+	return nil
 }
 
 //////// IMPLEMENTATION ////////
