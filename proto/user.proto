@@ -1,1 +1,20 @@
 syntax = "proto3";
+
+package user_service;
+
+option go_package = "generated/user_service";
+
+service UserManagement {
+    rpc CreateUser(NewUser) returns (User) {}
+}
+
+message NewUser {
+    string name = 1;
+    int32 age = 2;
+}
+
+message User {
+    string name = 1;
+    int32 age = 2;
+    int32 id = 3;
+}
