@@ -1,52 +1,84 @@
-package server
+package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"net"
 
+	"github.com/404th/grpcserver/db"
 	pb "github.com/404th/grpcserver/generated/user_service"
 	"google.golang.org/grpc"
 )
 
-type Server struct {
+type UserManagementServer struct {
 	pb.UnimplementedUserManagementServer
+	users_list *pb.UsersList
 }
 
-func NewServer() *Server {
-	return &Server{}
+func NewUserManagementServer() *UserManagementServer {
+	return &UserManagementServer{
+		users_list: &pb.UsersList{},
+	}
 }
 
-func (s *Server) Run(port string) error {
-	// listening
-	lis, err := net.Listen("tcp", port)
+const (
+	address = ":8080"
+)
+
+func main() {
+	lis, err := net.Listen("tcp", address)
 	if err != nil {
-		log.Fatalf("Error while listening on PORT%s", port)
-		return err
+		log.Fatalf("Error while listening %e", err)
 	}
 
-	// creating grpc server
-	gs := grpc.NewServer()
+	gServer := grpc.NewServer()
 
-	if err = gs.Serve(lis); err != nil {
-		log.Fatalf("Error while serving gRPC: %e", err)
-		return err
+	// registering services
+	pb.RegisterUserManagementServer(gServer, &UserManagementServer{})
+	log.Printf("Server is running on PORT: %d", address)
+
+	// serving
+	if err = gServer.Serve(lis); err != nil {
+		log.Fatalf("Error while serving %e", err)
 	}
-
-	return nil
 }
 
-//////// IMPLEMENTATION ////////
-func (s *Server) CreateUser(ctx context.Context, nu *pb.NewUser) (*pb.User, error) {
-	// generating ID
-	id := int32(rand.Intn(10000))
+func (s *UserManagementServer) CreateUser(ctx context.Context, us *pb.NewUser) (*pb.User, error) {
+	log.Printf("Receiving details: NAME: %s AGE: %d", us.GetName(), us.GetAge())
 
-	log.Printf("Got details: NAME: %v, AGE: %d while creating new user", nu.GetName(), nu.GetAge())
+	id := rand.Intn(10000)
 
-	return &pb.User{
-		Name: nu.GetName(),
-		Age:  nu.GetAge(),
-		Id:   id,
+	created := &pb.User{
+		Name: us.GetName() + " has been added",
+		Age:  us.GetAge(),
+		Id:   int32(id),
+	}
+
+	// add new element to fake db
+	db.Database.UsersList = append(db.Database.UsersList, created)
+
+	return created, nil
+}
+
+func (s *UserManagementServer) GetUsers(ctx context.Context, mt *pb.Empty) (*pb.UsersList, error) {
+	return db.Database, nil
+}
+
+func (s *UserManagementServer) DeleteUser(ctx context.Context, id *pb.IDTracker) (*pb.Deleted, error) {
+	var deleteUser *pb.User
+	for ind, user := range db.Database.UsersList {
+		if user.GetId() == id.GetId() {
+			db.Database.UsersList = append(db.Database.UsersList[:ind], db.Database.UsersList[ind+1:]...)
+			deleteUser = user
+		}
+	}
+
+	// returner
+	str := fmt.Sprintf("DELETE ID: %d NAME: %s AGE: %d", deleteUser.GetId(), deleteUser.GetName(), deleteUser.GetAge())
+
+	return &pb.Deleted{
+		DetailsOfDeleted: str,
 	}, nil
 }
