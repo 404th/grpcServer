@@ -3,19 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"log"
-	"math/rand"
 	"net"
 	"os"
 
 	pb "github.com/404th/grpcserver/generated/user_service"
+	pgx "github.com/jackc/pgx/v4"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/encoding/protojson"
 )
 
 type UserManagementServer struct {
 	pb.UnimplementedUserManagementServer
+	conn *pgx.Conn
 }
 
 func NewUserManagementServer() *UserManagementServer {
@@ -38,7 +37,15 @@ func (s *UserManagementServer) Run() error {
 }
 
 func main() {
+	psql_url := "postgres://postgres:postgres@localhost:5432/uss"
+	conn, err := pgx.Connect(context.Background(), psql_url)
+	if err != nil {
+		log.Fatalf("Error while connecting to PSQL db: %v", err)
+		return
+	}
+	defer conn.Close(context.Background())
 	var ss *UserManagementServer = NewUserManagementServer()
+	ss.conn = conn
 	if err := ss.Run(); err != nil {
 		log.Fatalf("Error while running server: %v", err)
 	}
@@ -47,102 +54,72 @@ func main() {
 //////////////////////////
 func (s *UserManagementServer) CreateUser(ctx context.Context, nu *pb.NewUser) (*pb.User, error) {
 	log.Printf("Received: Name: %s Age: %d\n", nu.GetName(), nu.GetAge())
+	created_user := &pb.User{Name: nu.GetName(), Age: nu.GetAge()}
 
-	readByte, err := ioutil.ReadFile("users.json")
-	var users_list *pb.UsersList = &pb.UsersList{}
+	qy := fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS users (
+			id SERIAL NOT NULL PRIMARY KEY,
+			name TEXT,
+			age INT
+		);
+	`)
 
-	var user_id int32 = int32(rand.Intn(10000))
-	created_user := &pb.User{Name: nu.GetName(), Age: nu.GetAge(), Id: user_id}
-
+	_, err := s.conn.Exec(context.Background(), qy)
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Print("File not found.Creating new one.")
-			users_list.UsersList = append(users_list.UsersList, created_user)
-
-			jsonBytes, err := protojson.Marshal(users_list)
-			if err != nil {
-				log.Fatalf("Error while marshaling users_list : %v", err)
-			}
-			if err := ioutil.WriteFile("users.json", jsonBytes, 0664); err != nil {
-				log.Fatalf("Error while writing to file: %v", err)
-			}
-
-			return created_user, nil
-		} else {
-			log.Fatalf("Error reading file: %v", err)
-		}
-	}
-
-	if err = protojson.Unmarshal(readByte, users_list); err != nil {
-		log.Fatalf("Error while un marshalling %v", err)
+		fmt.Fprintf(os.Stderr, "Error while creating an user and write to psql: %v", err)
+		os.Exit(1)
 		return nil, err
 	}
 
-	users_list.UsersList = append(users_list.UsersList, created_user)
-	writeByte, err := protojson.Marshal(users_list)
+	tx, err := s.conn.Begin(context.Background())
 	if err != nil {
-		log.Fatalf("Error while marshalling %v", err)
-		return nil, err
+		log.Fatalf("failed writing to psql: %v", err)
 	}
 
-	if err := ioutil.WriteFile("users.json", writeByte, 0664); err != nil {
-		log.Fatalf("Error while writing to file: %v", err)
-		return nil, err
+	_, err = tx.Exec(context.Background(), "INSERT INTO users(name, age) VALUES($1, $2);", nu.GetName(), nu.GetAge())
+	if err != nil {
+		log.Fatalf("Error while inserting to psql: %v", err)
+		tx.Rollback(context.Background())
 	}
+
+	tx.Commit(context.Background())
 
 	return created_user, nil
 }
 
 func (s *UserManagementServer) GetUsers(ctx context.Context, mt *pb.Empty) (*pb.UsersList, error) {
-	readByte, err := ioutil.ReadFile("users.json")
 	var users_list *pb.UsersList = &pb.UsersList{}
+
+	sql := `SELECT * FROM users;`
+
+	rows, err := s.conn.Query(context.Background(), sql)
 	if err != nil {
-		log.Fatalf("Error while reading file: %v", err)
-		return nil, err
+		log.Fatalf("Error while getting all users: %v", err)
 	}
-	if err := protojson.Unmarshal(readByte, users_list); err != nil {
-		log.Fatalf("Error while unmarshalling: %v", err)
-		return nil, err
+	defer rows.Close()
+
+	for rows.Next() {
+		user := pb.User{}
+		err := rows.Scan(&user.Id, &user.Name, &user.Age)
+		if err != nil {
+			log.Fatalf("Error while scanning rows (getting all users): %v", err)
+		}
+		users_list.UsersList = append(users_list.UsersList, &user)
 	}
 
 	return users_list, nil
 }
 
 func (s *UserManagementServer) DeleteUser(ctx context.Context, id *pb.IDTracker) (*pb.Deleted, error) {
-	var del_usr *pb.User
-	var users_list *pb.UsersList = &pb.UsersList{}
+	sql := `DELETE FROM users WHERE id = $1;`
 
-	readByte, err := ioutil.ReadFile("users.json")
+	_, err := s.conn.Exec(context.Background(), sql)
 	if err != nil {
-		log.Fatalf("Error while reading in deleting one of them: %v", err)
-		return nil, err
+		fmt.Fprintf(os.Stderr, "Error while deleting item: %v", err)
+		os.Exit(1)
 	}
 
-	if err := protojson.Unmarshal(readByte, users_list); err != nil {
-		log.Fatalf("Error while unmarshalling deleting one of them: %v", err)
-		return nil, err
-	}
-
-	for ind, usr := range users_list.UsersList {
-		if usr.GetId() == id.GetId() {
-			del_usr = usr
-			users_list.UsersList = append(users_list.UsersList[:ind], users_list.UsersList[ind+1:]...)
-		}
-	}
-
-	wrJson, err := protojson.Marshal(users_list)
-	if err != nil {
-		log.Fatalf("Error while marshalling: %v", err)
-		return nil, err
-	}
-
-	if err := ioutil.WriteFile("users.json", wrJson, 0664); err != nil {
-		log.Fatalf("Error while writin to file in deleting one: %v", err)
-		return nil, err
-	}
-
-	str := fmt.Sprintf("Deleted item details: NAME: %s AGE: %d ID: %d", del_usr.GetName(), del_usr.GetAge(), del_usr.GetId())
 	return &pb.Deleted{
-		DetailsOfDeleted: str,
+		DetailsOfDeleted: "DELETED",
 	}, nil
 }
