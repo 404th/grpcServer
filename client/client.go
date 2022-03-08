@@ -55,7 +55,7 @@ func main() {
 		log.Fatalf("Error while getting users: %v\n", err)
 	}
 
-	log.Printf("ALL USERS: %v\n", ul.GetUsersList())
+	log.Printf("ALL USERS: %v\n", ul)
 
 	// delete
 	del, err := cc.DeleteUser(ctx, &pb.IDTracker{Id: d_id})
